@@ -38,7 +38,7 @@ const redisLeaderService = new k8s.core.v1.Service("redis-leader", {
         labels: redisLeaderDeployment.metadata.labels,
     },
     spec: {
-        ports: [{ name: "redis-metrics", port: 6379, targetPort: 6379 }],
+        ports: [{ name: "redis", port: 6379, targetPort: 6379 }],
         selector: redisLeaderDeployment.spec.template.metadata.labels,
     },
 });
@@ -102,6 +102,14 @@ const frontendDeployment = new k8s.apps.v1.Deployment("frontend", {
                         env: [{ name: "GET_HOSTS_FROM", value: "dns" /* value: "env"*/ }],
                         ports: [{ containerPort: 80 }],
                     },
+                    {
+                        name: "apache-exporter",
+                        image: "bitnami/apache-exporter",
+                        args: [
+                            "--scrape_uri=http://127.0.0.1/server-status?auto"
+                        ],
+                        ports: [{containerPort: 9117}],
+                    },
                 ],
             },
         },
@@ -109,12 +117,16 @@ const frontendDeployment = new k8s.apps.v1.Deployment("frontend", {
 });
 const frontendService = new k8s.core.v1.Service("frontend", {
     metadata: {
-        labels: frontendDeployment.metadata.labels,
+        labels: frontendDeployment.spec.template.metadata.labels,
+        //labels: frontendLabels,
         name: "frontend",
     },
     spec: {
-        type: useLoadBalancer ? "LoadBalancer" : "ClusterIP",
-        ports: [{ name: "http-metrics", port: 80 }],
+        type: "ClusterIP",
+        ports: [
+            { name: "frontend", port: 80 },
+            { name: "metrics", port: 9117 },
+        ],
         selector: frontendDeployment.spec.template.metadata.labels,
     },
 });
@@ -166,27 +178,16 @@ const frontendServiceMonitor = new k8s.apiextensions.CustomResource("frontend-se
     kind: "ServiceMonitor",
     metadata: {
         name: "frontend-servicemonitor",
-        labels: { app: "guestbook-metrics" },
+        labels: { 
+            app: "guestbook-metrics",
+            release: "kube-prometheus-stack",
+        },
     },
     spec: {
+        namespaceSelector: { any: true },
         selector: { matchLabels: frontendLabels },
         endpoints: [
-            { port: "http-metrics", path: "/metrics", interval: "15s" },
-        ],
-    },
-});
-
-const redisLeaderServiceMonitor = new k8s.apiextensions.CustomResource("redis-leader-servicemonitor", {
-    apiVersion: "monitoring.coreos.com/v1",
-    kind: "ServiceMonitor",
-    metadata: {
-        name: "redis-leader-servicemonitor",
-        labels: { app: "guestbook-metrics" },
-    },
-    spec: {
-        selector: { matchLabels: redisLeaderLabels },
-        endpoints: [
-            { port: "redis-metrics", interval: "30s" },
+            { port: "metrics", path: "/metrics", interval: "15s" },
         ],
     },
 });

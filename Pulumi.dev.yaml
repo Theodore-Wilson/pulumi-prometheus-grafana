@@ -1,3 +1,0 @@
-config:
-  k8s-guestbook:grafanaAdminPassword:
-    secure: AAABAHn7bT2ehZzhq/3JlZJbyB1TXoiznTWgO831d63Ph8BrgAi1annNSp6UQsoO

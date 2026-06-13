@@ -1,3 +1,4 @@
 /bin/
 /node_modules/
-/graphana-dashboard.json
+/graphana-frontend-dashboard.json
+/graphana-redis-dashboard.json

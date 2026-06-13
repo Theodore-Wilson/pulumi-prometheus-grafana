@@ -3,17 +3,18 @@
 import * as k8s from "@pulumi/kubernetes";
 import * as pulumi from "@pulumi/pulumi";
 
-// Create only services of type `ClusterIP`
-// for clusters that don't support `LoadBalancer` services
-const config = new pulumi.Config();
-const useLoadBalancer = config.getBoolean("useLoadBalancer");
+//const config = new pulumi.Config();
 //const grafanaPassword = config.getSecret("grafanaAdminPassword")
+const redisServiceMonitorLabel = "redis";
 
 //
 // REDIS LEADER.
 //
 
-const redisLeaderLabels = { app: "redis-leader" };
+const redisLeaderLabels = { 
+    app: "redis-leader",
+    serviceMonitor: redisServiceMonitorLabel,
+};
 const redisLeaderDeployment = new k8s.apps.v1.Deployment("redis-leader", {
     spec: {
         selector: { matchLabels: redisLeaderLabels },
@@ -27,6 +28,15 @@ const redisLeaderDeployment = new k8s.apps.v1.Deployment("redis-leader", {
                         resources: { requests: { cpu: "100m", memory: "100Mi" } },
                         ports: [{ containerPort: 6379 }],
                     },
+                    {
+                        name: "redis-leader-exporter",
+                        image: "bitnami/redis-exporter",
+                        args: [
+                            "--redis.addr=redis://localhost:6379",
+                            "--web.listen-address=:9121",
+                        ],
+                        ports: [{ containerPort: 9121 }],
+                    },
                 ],
             },
         },
@@ -35,10 +45,21 @@ const redisLeaderDeployment = new k8s.apps.v1.Deployment("redis-leader", {
 const redisLeaderService = new k8s.core.v1.Service("redis-leader", {
     metadata: {
         name: "redis-leader",
-        labels: redisLeaderDeployment.metadata.labels,
+        labels: redisLeaderDeployment.spec.template.metadata.labels,
     },
     spec: {
-        ports: [{ name: "redis-metrics", port: 6379, targetPort: 6379 }],
+        ports: [
+            {
+                name: "redis-leader", 
+                port: 6379, 
+                targetPort: 6379,
+            },
+            {
+                name: "redis-leader-metrics",
+                port: 9121,
+                targetPort: 9121,
+            }
+        ],
         selector: redisLeaderDeployment.spec.template.metadata.labels,
     },
 });
@@ -47,7 +68,10 @@ const redisLeaderService = new k8s.core.v1.Service("redis-leader", {
 // REDIS REPLICA.
 //
 
-const redisReplicaLabels = { app: "redis-replica" };
+const redisReplicaLabels = { 
+    app: "redis-replica",
+    serviceMonitor: redisServiceMonitorLabel 
+};
 const redisReplicaDeployment = new k8s.apps.v1.Deployment("redis-replica", {
     spec: {
         selector: { matchLabels: redisReplicaLabels },
@@ -59,10 +83,17 @@ const redisReplicaDeployment = new k8s.apps.v1.Deployment("redis-replica", {
                         name: "replica",
                         image: "pulumi/guestbook-redis-replica",
                         resources: { requests: { cpu: "100m", memory: "100Mi" } },
-                        // If your cluster config does not include a dns service, then to instead access an environment
-                        // variable to find the leader's host, change `value: "dns"` to read `value: "env"`.
                         env: [{ name: "GET_HOSTS_FROM", value: "dns" }],
                         ports: [{ containerPort: 6379 }],
+                    },
+                    {
+                        name: "redis-replica-exporter",
+                        image: "bitnami/redis-exporter",
+                        args: [
+                            "--redis.addr=redis://localhost:6379",
+                            "--web.listen-address=:9121",
+                        ],
+                        ports: [{ containerPort: 9121 }],
                     },
                 ],
             },
@@ -72,10 +103,20 @@ const redisReplicaDeployment = new k8s.apps.v1.Deployment("redis-replica", {
 const redisReplicaService = new k8s.core.v1.Service("redis-replica", {
     metadata: {
         name: "redis-replica",
-        labels: redisReplicaDeployment.metadata.labels
+        labels: redisReplicaDeployment.spec.template.metadata.labels
     },
     spec: {
-        ports: [{ port: 6379, targetPort: 6379 }],
+        ports: [
+            { 
+                name: "redis-replica",
+                port: 6379,
+                targetPort: 6379 
+            },
+            {
+                name: "redis-replica-metrics",
+                port: 9121,
+                targetPort: 9121,
+            }],
         selector: redisReplicaDeployment.spec.template.metadata.labels,
     },
 });
@@ -97,10 +138,14 @@ const frontendDeployment = new k8s.apps.v1.Deployment("frontend", {
                         name: "frontend",
                         image: "pulumi/guestbook-php-redis",
                         resources: { requests: { cpu: "100m", memory: "100Mi" } },
-                        // If your cluster config does not include a dns service, then to instead access an environment
-                        // variable to find the leader's host, change `value: "dns"` to read `value: "env"`.
-                        env: [{ name: "GET_HOSTS_FROM", value: "dns" /* value: "env"*/ }],
+                        env: [{ name: "GET_HOSTS_FROM", value: "dns" }],
                         ports: [{ containerPort: 80 }],
+                    },
+                    {
+                        name: "apache-exporter",
+                        image: "bitnami/apache-exporter",
+                        args: ["--scrape_uri=http://127.0.0.1/server-status?auto"],
+                        ports: [{ containerPort: 9117 }],
                     },
                 ],
             },
@@ -109,12 +154,21 @@ const frontendDeployment = new k8s.apps.v1.Deployment("frontend", {
 });
 const frontendService = new k8s.core.v1.Service("frontend", {
     metadata: {
-        labels: frontendDeployment.metadata.labels,
+        labels: frontendDeployment.spec.template.metadata.labels,
         name: "frontend",
     },
     spec: {
-        type: useLoadBalancer ? "LoadBalancer" : "ClusterIP",
-        ports: [{ name: "http-metrics", port: 80 }],
+        type: "ClusterIP",
+        ports: [
+            { 
+                name: "frontend",
+                port: 80 
+            },
+            { 
+                name: "metrics", 
+                port: 9117 
+            },
+        ],
         selector: frontendDeployment.spec.template.metadata.labels,
     },
 });
@@ -166,27 +220,44 @@ const frontendServiceMonitor = new k8s.apiextensions.CustomResource("frontend-se
     kind: "ServiceMonitor",
     metadata: {
         name: "frontend-servicemonitor",
-        labels: { app: "guestbook-metrics" },
+        labels: { 
+            app: "guestbook-metrics",
+            release: "kube-prometheus-stack",
+        },
     },
     spec: {
+        namespaceSelector: { any: true },
         selector: { matchLabels: frontendLabels },
         endpoints: [
-            { port: "http-metrics", path: "/metrics", interval: "15s" },
+            { port: "metrics", path: "/metrics", interval: "15s" },
         ],
     },
 });
 
-const redisLeaderServiceMonitor = new k8s.apiextensions.CustomResource("redis-leader-servicemonitor", {
+const redisServiceMonitor = new k8s.apiextensions.CustomResource("redis-servicemonitor", {
     apiVersion: "monitoring.coreos.com/v1",
     kind: "ServiceMonitor",
     metadata: {
-        name: "redis-leader-servicemonitor",
-        labels: { app: "guestbook-metrics" },
+        name: "redis-servicemonitor",
+        labels: { 
+            app: "redis-metrics",
+            release: "kube-prometheus-stack",
+        },
     },
     spec: {
-        selector: { matchLabels: redisLeaderLabels },
+        namespaceSelector: { any: true },
+        selector: { matchLabels: { serviceMonitor: redisServiceMonitorLabel } },
         endpoints: [
-            { port: "redis-metrics", interval: "30s" },
+            { 
+                port: "redis-leader-metrics", 
+                path: "/metrics", 
+                interval: "15s" 
+            },
+            { 
+                port: "redis-replica-metrics", 
+                path: "/metrics", 
+                interval: "15s" 
+            },
         ],
     },
 });

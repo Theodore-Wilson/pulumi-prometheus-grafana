@@ -5,14 +5,11 @@ import * as pulumi from "@pulumi/pulumi";
 import * as fs from "fs";
 import * as path from "path";
 
-//const config = new pulumi.Config();
-//const grafanaPassword = config.getSecret("grafanaAdminPassword")
+const config = new pulumi.Config();
+const grafanaPassword = config.getSecret("grafanaAdminPassword")
 
 const redisDashboard = JSON.stringify(JSON.parse(fs.readFileSync("./grafana-dashboards/grafana-redis-dashboard.json", "utf-8")));
 const frontendDashboard = JSON.stringify(JSON.parse(fs.readFileSync("./grafana-dashboards/grafana-frontend-dashboard.json", "utf-8")));
-
-//console.log(redisDashboard)
-//console.log(typeof redisDashboard)
 
 const redisServiceMonitorLabel = "redis";
 
@@ -204,6 +201,7 @@ const kubePrometheusStack = new k8s.helm.v3.Chart("kube-prometheus-stack", {
         },
         // Disable heavier/optional components we don't need for basic scraping
         grafana: {
+            adminPassword: grafanaPassword,
             enabled: true,
             //adminPassword: grafanaPassword,
             //forceSecretOverride: true,
@@ -339,14 +337,12 @@ export const grafanaAdminUser = grafanaSecret.data.apply(d =>
     Buffer.from(d["admin-user"], "base64").toString()
 );
 
-export const grafanaAdminPassword = grafanaSecret.data.apply(d =>
+/*export const grafanaAdminPassword = grafanaSecret.data.apply(d =>
     Buffer.from(d["admin-password"], "base64").toString("utf-8")
-);
+);*/
 
-export const grafanaLogin = pulumi.all([grafanaAdminUser, grafanaAdminPassword]).apply(([username, password]) => {
-    console.log(`Grafana Username: ${username}\nGrafana Password: ${password}`);
-    return {
-        'username': username,
-        'password': password,
-    }
-})
+
+export const grafanaAdminPassword = pulumi.unsecret(pulumi.output(grafanaPassword).apply(p => {
+    //console.log(`Grafana Admin Password (from config): ${p}`);
+    return p;
+}));

@@ -3,7 +3,6 @@
 import * as k8s from "@pulumi/kubernetes";
 import * as pulumi from "@pulumi/pulumi";
 import * as fs from "fs";
-import * as path from "path";
 
 const config = new pulumi.Config();
 const grafanaPassword = config.getSecret("grafanaAdminPassword")

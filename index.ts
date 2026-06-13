@@ -2,9 +2,18 @@
 
 import * as k8s from "@pulumi/kubernetes";
 import * as pulumi from "@pulumi/pulumi";
+import * as fs from "fs";
+import * as path from "path";
 
 //const config = new pulumi.Config();
 //const grafanaPassword = config.getSecret("grafanaAdminPassword")
+
+const redisDashboard = JSON.stringify(JSON.parse(fs.readFileSync("./grafana-dashboards/grafana-redis-dashboard.json", "utf-8")));
+const frontendDashboard = JSON.stringify(JSON.parse(fs.readFileSync("./grafana-dashboards/grafana-frontend-dashboard.json", "utf-8")));
+
+//console.log(redisDashboard)
+//console.log(typeof redisDashboard)
+
 const redisServiceMonitorLabel = "redis";
 
 //
@@ -202,6 +211,11 @@ const kubePrometheusStack = new k8s.helm.v3.Chart("kube-prometheus-stack", {
                 type: "NodePort",
                 nodePort: 30080,
             },
+            sidecar: {
+                dashboards: {
+                    enabled: true,
+                },
+            },
         },
         alertmanager: { enabled: false },
         kubeStateMetrics: { enabled: true },
@@ -211,6 +225,30 @@ const kubePrometheusStack = new k8s.helm.v3.Chart("kube-prometheus-stack", {
         kubeControllerManager: { enabled: false },
         kubeScheduler: { enabled: false },
     },
+});
+
+const frontendDashboardCm = new k8s.core.v1.ConfigMap("frontend-grafana-dashboard", {
+  metadata: {
+    name: "frontend-grafana-dashboard",
+    labels: {
+      grafana_dashboard: "1",
+    },
+  },
+  data: {
+    "frontend-dashboard.json": frontendDashboard,
+  },
+});
+
+const redisDashboardCm = new k8s.core.v1.ConfigMap("redis-grafana-dashboard", {
+  metadata: {
+    name: "redis-grafana-dashboard",
+    labels: {
+      grafana_dashboard: "1",
+    },
+  },
+  data: {
+    "redis-dashboard.json": redisDashboard,
+  },
 });
 
 // Create ServiceMonitor CRs so Prometheus (installed above) scrapes our services.

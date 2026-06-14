@@ -4,12 +4,6 @@ import * as pulumi from "@pulumi/pulumi";
 import * as k8s from "@pulumi/kubernetes";
 import * as fs from "fs";
 
-// Initialize pulumi config to read any configuration values (like the Grafana admin password).
-const config = new pulumi.Config();
-// Read the Grafana admin password from config. This will be passed to the Helm chart and stored as a Kubernetes Secret by the chart.
-// The password is set using `pulumi config set grafanaAdminPassword <password> --secret` before running the stack.
-const grafanaPassword = config.getSecret("grafanaAdminPassword")
-
 // Read the Grafana dashboard JSON files and convert them to strings to be stored in ConfigMaps.
 const redisDashboard = JSON.stringify(JSON.parse(fs.readFileSync("./grafana-dashboards/grafana-redis-dashboard.json", "utf-8")));
 const frontendDashboard = JSON.stringify(JSON.parse(fs.readFileSync("./grafana-dashboards/grafana-frontend-dashboard.json", "utf-8")));
@@ -212,8 +206,7 @@ const kubePrometheusStack = new k8s.helm.v3.Chart("kube-prometheus-stack", {
             },
         },
         grafana: {
-            // Set the Grafana admin password from config. This will be stored as a Kubernetes Secret by the chart.
-            adminPassword: grafanaPassword,
+            // The Admin Password will be auto-generated on creation of the service and stored in a Kubernetes Secret.
             enabled: true,
             // Expose Grafana via a NodePort service on port 30080.
             service: {
@@ -372,8 +365,7 @@ export const grafanaAdminUser = pulumi.unsecret(grafanaSecret.data.apply(d =>
     Buffer.from(d["admin-user"], "base64").toString()
 ));
 
-// Export the Grafana admin password from the Pulumi secret. This is needed to access Grafana since we need the admin username and password to log in. 
-// The password is stored as a Pulumi secret since it is sensitive information, so we use pulumi.unsecret to export it in a way that it can be accessed by users of the stack outputs.
-export const grafanaAdminPassword = pulumi.unsecret(pulumi.output(grafanaPassword).apply(p => {
-    return p;
-}));
+// Extract the Grafana admin username from the Kubernetes secret created by the chart. This is needed to access Grafana since we need the admin username and password to log in. The username is stored in the secret in base64 encoded form, so we decode it here.
+export const grafanaAdminPassword = pulumi.unsecret(grafanaSecret.data.apply(d =>
+    Buffer.from(d["admin-password"], "base64").toString("utf-8")
+));

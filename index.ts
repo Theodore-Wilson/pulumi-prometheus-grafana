@@ -345,9 +345,9 @@ const grafanaSecret = kubePrometheusStack.getResource(
 );
 
 // Extract the NodePort assigned to the Grafana service. This is needed to construct the URL to access Grafana since we're using a NodePort service type.
-export const grafanaNodePort =  grafanaService.spec.apply(s => 
-    s.ports?.find(p => p.port === 80)?.nodePort
-);
+export const grafanaNodePort =  pulumi.unsecret(pulumi.all([grafanaService.spec]).apply(([spec]) => {
+    return spec.ports?.find(p => p.port === 80)?.nodePort;
+}));
 
 // Reference the minikube node to get its IP address. This is needed to construct the URL to access Grafana since we're using a NodePort service type and need the node IP + node port to access it.
 const minikubeNode = k8s.core.v1.Node.get("minikube-node", "minikube");
@@ -362,10 +362,10 @@ export const minikubeIp = minikubeNode.status.addresses.apply(addresses => {
 });
 
 // Construct the URL to access Grafana using the minikube node IP and the Grafana service NodePort. This is the URL that will be used to access Grafana in the browser.
-export const grafanaUrl = pulumi.all([minikubeIp, grafanaNodePort]).apply(([ip, port]) => {
+export const grafanaUrl = pulumi.unsecret(pulumi.all([minikubeIp, grafanaNodePort]).apply(([ip, port]) => {
     console.log(`Grafana is available at http://${ip}:${port}`);
     return `http://${ip}:${port}`
-})
+}));
 
 // Extract the Grafana admin username from the Kubernetes secret created by the chart. This is needed to access Grafana since we need the admin username and password to log in. The username is stored in the secret in base64 encoded form, so we decode it here.
 export const grafanaAdminUser = pulumi.unsecret(grafanaSecret.data.apply(d =>

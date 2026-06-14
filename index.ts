@@ -326,6 +326,7 @@ const redisServiceMonitor = new k8s.apiextensions.CustomResource("redis-servicem
 // VARIABLE EXPORTS
 //
 
+// All Variables can be exported using the command `pulumi stack output <variable-name>` and will be printed in the Pulumi CLI after `pulumi up` completes.
 
 const grafanaServiceName = "kube-prometheus-stack-grafana";
 

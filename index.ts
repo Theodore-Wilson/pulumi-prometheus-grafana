@@ -7,6 +7,7 @@ import * as fs from "fs";
 // Initialize pulumi config to read any configuration values (like the Grafana admin password).
 const config = new pulumi.Config();
 // Read the Grafana admin password from config. This will be passed to the Helm chart and stored as a Kubernetes Secret by the chart.
+// The password is set using `pulumi config set grafanaAdminPassword <password> --secret` before running the stack.
 const grafanaPassword = config.getSecret("grafanaAdminPassword")
 
 // Read the Grafana dashboard JSON files and convert them to strings to be stored in ConfigMaps.

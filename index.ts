@@ -1,12 +1,15 @@
 // index.ts
 
-import * as k8s from "@pulumi/kubernetes";
 import * as pulumi from "@pulumi/pulumi";
+import * as k8s from "@pulumi/kubernetes";
 import * as fs from "fs";
 
+// Initialize pulumi config to read any configuration values (like the Grafana admin password).
 const config = new pulumi.Config();
+// Read the Grafana admin password from config. This will be passed to the Helm chart and stored as a Kubernetes Secret by the chart.
 const grafanaPassword = config.getSecret("grafanaAdminPassword")
 
+// Read the Grafana dashboard JSON files and convert them to strings to be stored in ConfigMaps.
 const redisDashboard = JSON.stringify(JSON.parse(fs.readFileSync("./grafana-dashboards/grafana-redis-dashboard.json", "utf-8")));
 const frontendDashboard = JSON.stringify(JSON.parse(fs.readFileSync("./grafana-dashboards/grafana-frontend-dashboard.json", "utf-8")));
 
@@ -27,12 +30,14 @@ const redisLeaderDeployment = new k8s.apps.v1.Deployment("redis-leader", {
             metadata: { labels: redisLeaderLabels },
             spec: {
                 containers: [
+                    // The main Redis Leader container.
                     {
                         name: "redis-leader",
                         image: "redis",
                         resources: { requests: { cpu: "100m", memory: "100Mi" } },
                         ports: [{ containerPort: 6379 }],
                     },
+                    // A sidecar container running the Redis Exporter for Prometheus metrics.
                     {
                         name: "redis-leader-exporter",
                         image: "bitnami/redis-exporter",
@@ -84,6 +89,7 @@ const redisReplicaDeployment = new k8s.apps.v1.Deployment("redis-replica", {
             metadata: { labels: redisReplicaLabels },
             spec: {
                 containers: [
+                    // The main Redis Replica container.
                     {
                         name: "replica",
                         image: "pulumi/guestbook-redis-replica",
@@ -91,6 +97,7 @@ const redisReplicaDeployment = new k8s.apps.v1.Deployment("redis-replica", {
                         env: [{ name: "GET_HOSTS_FROM", value: "dns" }],
                         ports: [{ containerPort: 6379 }],
                     },
+                    // A sidecar container running the Redis Exporter for Prometheus metrics.
                     {
                         name: "redis-replica-exporter",
                         image: "bitnami/redis-exporter",
@@ -121,7 +128,8 @@ const redisReplicaService = new k8s.core.v1.Service("redis-replica", {
                 name: "redis-replica-metrics",
                 port: 9121,
                 targetPort: 9121,
-            }],
+            }
+        ],
         selector: redisReplicaDeployment.spec.template.metadata.labels,
     },
 });
@@ -139,6 +147,7 @@ const frontendDeployment = new k8s.apps.v1.Deployment("frontend", {
             metadata: { labels: frontendLabels },
             spec: {
                 containers: [
+                    // The main frontend container.
                     {
                         name: "frontend",
                         image: "pulumi/guestbook-php-redis",
@@ -146,6 +155,8 @@ const frontendDeployment = new k8s.apps.v1.Deployment("frontend", {
                         env: [{ name: "GET_HOSTS_FROM", value: "dns" }],
                         ports: [{ containerPort: 80 }],
                     },
+                    // A sidecar container running the Apache Exporter for Prometheus metrics.
+                    // Used since the frontend is using Apache as the web server.
                     {
                         name: "apache-exporter",
                         image: "bitnami/apache-exporter",
@@ -178,9 +189,12 @@ const frontendService = new k8s.core.v1.Service("frontend", {
     },
 });
 
-// Export the frontend IP.
-export let frontendIp: pulumi.Output<string> = frontendService.spec.clusterIP;
+//
+// PROMETHEUS STACK (GRAFANA INCLUDED)
+//
 
+// This installs the Prometheus Operator and a basic Prometheus + Grafana setup.
+// We configure the chart to only install the core Prometheus Operator and Prometheus server components, and disable other optional components like Alertmanager keep the cluster footprint minimal.
 const kubePrometheusStack = new k8s.helm.v3.Chart("kube-prometheus-stack", {
   chart: "kube-prometheus-stack",
   version: "86.2.2",
@@ -188,26 +202,24 @@ const kubePrometheusStack = new k8s.helm.v3.Chart("kube-prometheus-stack", {
     repo: "https://prometheus-community.github.io/helm-charts",
   },
     values: {
-        // Enable only the core Prometheus Operator and Prometheus server,
-        // keep other components minimal to limit cluster footprint.
         prometheusOperator: { enabled: true },
         prometheus: {
             enabled: true,
             prometheusSpec: {
-                // allow ServiceMonitor resources (we create them below) to be discovered
+                // allow ServiceMonitor resources (created below) to be discovered
                 serviceMonitorSelector: {},
             },
         },
-        // Disable heavier/optional components we don't need for basic scraping
         grafana: {
+            // Set the Grafana admin password from config. This will be stored as a Kubernetes Secret by the chart.
             adminPassword: grafanaPassword,
             enabled: true,
-            //adminPassword: grafanaPassword,
-            //forceSecretOverride: true,
+            // Expose Grafana via a NodePort service on port 30080.
             service: {
                 type: "NodePort",
                 nodePort: 30080,
             },
+            // Configure Grafana to load dashboards from ConfigMaps with the label "grafana_dashboard=1" (Config maps are created below).
             sidecar: {
                 dashboards: {
                     enabled: true,
@@ -224,6 +236,11 @@ const kubePrometheusStack = new k8s.helm.v3.Chart("kube-prometheus-stack", {
     },
 });
 
+//
+// CONFIG MAPS AND SERVICE MONITORS FOR PROMETHEUS AND GRAFANA
+//
+
+// This config map loads the frontend dashbord into Grafana.
 const frontendDashboardCm = new k8s.core.v1.ConfigMap("frontend-grafana-dashboard", {
   metadata: {
     name: "frontend-grafana-dashboard",
@@ -236,6 +253,8 @@ const frontendDashboardCm = new k8s.core.v1.ConfigMap("frontend-grafana-dashboar
   },
 });
 
+// Config Map to hold the redis Grafana dashboard JSON.
+// This config map loads the redis dashbord into Grafana.
 const redisDashboardCm = new k8s.core.v1.ConfigMap("redis-grafana-dashboard", {
   metadata: {
     name: "redis-grafana-dashboard",
@@ -248,8 +267,9 @@ const redisDashboardCm = new k8s.core.v1.ConfigMap("redis-grafana-dashboard", {
   },
 });
 
-// Create ServiceMonitor CRs so Prometheus (installed above) scrapes our services.
+// Create ServiceMonitor CRs so Prometheus scrapes our services.
 // These rely on the Prometheus Operator CRDs installed by the chart.
+// This scrapes the frontend metrics endpoint at /metrics on port 9117.
 const frontendServiceMonitor = new k8s.apiextensions.CustomResource("frontend-servicemonitor", {
     apiVersion: "monitoring.coreos.com/v1",
     kind: "ServiceMonitor",
@@ -261,14 +281,19 @@ const frontendServiceMonitor = new k8s.apiextensions.CustomResource("frontend-se
         },
     },
     spec: {
-        namespaceSelector: { any: true },
         selector: { matchLabels: frontendLabels },
         endpoints: [
-            { port: "metrics", path: "/metrics", interval: "15s" },
+            { 
+                port: "metrics", 
+                path: "/metrics", 
+                interval: "15s" 
+            },
         ],
     },
 });
 
+// This scrapes the redis metrics endpoint at /metrics on port 9121.
+// This scrapes both the redis leader and replica metrics since both services have the same label that the ServiceMonitor selector matches on.
 const redisServiceMonitor = new k8s.apiextensions.CustomResource("redis-servicemonitor", {
     apiVersion: "monitoring.coreos.com/v1",
     kind: "ServiceMonitor",
@@ -280,7 +305,6 @@ const redisServiceMonitor = new k8s.apiextensions.CustomResource("redis-servicem
         },
     },
     spec: {
-        namespaceSelector: { any: true },
         selector: { matchLabels: { serviceMonitor: redisServiceMonitorLabel } },
         endpoints: [
             { 
@@ -297,23 +321,36 @@ const redisServiceMonitor = new k8s.apiextensions.CustomResource("redis-servicem
     },
 });
 
-// Reference the Grafana service created by the chart so we can export access details.
+//
+// VARIABLE EXPORTS
+//
+
+
 const grafanaServiceName = "kube-prometheus-stack-grafana";
+
+// Reference the Grafana service created by the chart so we can export access details.
+// getResource is used to allow the script to pass preview checks.
 const grafanaService = kubePrometheusStack.getResource(
     "v1/Service", 
     `default/${grafanaServiceName}`,
 );
 
-export const grafanaServiceType = "NodePort";
+// Reference the Grafana secrets created by the chart so we can export the admin password to access Grafana.
+// getResource is used to allow the script to pass preview checks.
+const grafanaSecret = kubePrometheusStack.getResource(
+    "v1/Secret", 
+    `default/${grafanaServiceName}`,
+);
 
-const grafanaNodePort =  grafanaService.spec.apply(s => 
+// Extract the NodePort assigned to the Grafana service. This is needed to construct the URL to access Grafana since we're using a NodePort service type.
+export const grafanaNodePort =  grafanaService.spec.apply(s => 
     s.ports?.find(p => p.port === 80)?.nodePort
 );
 
-export const grafanaPort = grafanaNodePort;
-
+// Reference the minikube node to get its IP address. This is needed to construct the URL to access Grafana since we're using a NodePort service type and need the node IP + node port to access it.
 const minikubeNode = k8s.core.v1.Node.get("minikube-node", "minikube");
 
+// Extract the InternalIP address of the minikube node. This is needed to construct the URL to access Grafana since we're using a NodePort service type and need the node IP + node port to access it.
 export const minikubeIp = minikubeNode.status.addresses.apply(addresses => {
     const internalIp = addresses?.find(addr => addr.type === "InternalIP");
     if (!internalIp) {
@@ -322,26 +359,19 @@ export const minikubeIp = minikubeNode.status.addresses.apply(addresses => {
     return internalIp.address;
 });
 
+// Construct the URL to access Grafana using the minikube node IP and the Grafana service NodePort. This is the URL that will be used to access Grafana in the browser.
 export const grafanaUrl = pulumi.all([minikubeIp, grafanaNodePort]).apply(([ip, port]) => {
     console.log(`Grafana is available at http://${ip}:${port}`);
     return `http://${ip}:${port}`
 })
 
-const grafanaSecret = kubePrometheusStack.getResource(
-    "v1/Secret", 
-    `default/${grafanaServiceName}`,
-);
-
-export const grafanaAdminUser = grafanaSecret.data.apply(d =>
+// Extract the Grafana admin username from the Kubernetes secret created by the chart. This is needed to access Grafana since we need the admin username and password to log in. The username is stored in the secret in base64 encoded form, so we decode it here.
+export const grafanaAdminUser = pulumi.unsecret(grafanaSecret.data.apply(d =>
     Buffer.from(d["admin-user"], "base64").toString()
-);
+));
 
-/*export const grafanaAdminPassword = grafanaSecret.data.apply(d =>
-    Buffer.from(d["admin-password"], "base64").toString("utf-8")
-);*/
-
-
+// Export the Grafana admin password from the Pulumi secret. This is needed to access Grafana since we need the admin username and password to log in. 
+// The password is stored as a Pulumi secret since it is sensitive information, so we use pulumi.unsecret to export it in a way that it can be accessed by users of the stack outputs.
 export const grafanaAdminPassword = pulumi.unsecret(pulumi.output(grafanaPassword).apply(p => {
-    //console.log(`Grafana Admin Password (from config): ${p}`);
     return p;
 }));
